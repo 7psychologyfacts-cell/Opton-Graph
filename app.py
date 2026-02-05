@@ -1,408 +1,563 @@
 """
-NIFTY/BANKNIFTY Live Option Chain Visualizer
-Streamlit App for Upstox API
+NIFTY Option Chain Visualizer - Flask App for Vercel/Railway
 """
 
-import streamlit as st
+from flask import Flask, render_template_string, request, jsonify, send_file
 import requests
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import time
+import io
 import os
+from flask_cors import CORS
 
-# Page configuration
-st.set_page_config(
-    page_title="Live Option Chain Visualizer",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+app = Flask(__name__)
+CORS(app)
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #00ff88;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .stButton>button {
-        background-color: #00ff88;
-        color: black;
-        font-weight: bold;
-        border: none;
-        width: 100%;
-    }
-    .stButton>button:hover {
-        background-color: #00cc6a;
-    }
-    .metric-box {
-        background: rgba(30, 30, 46, 0.8);
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid #00ff88;
-        margin: 10px 0;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-class UpstoxOptionChain:
-    """Upstox API handler"""
-    
-    def __init__(self, access_token):
-        self.base_url = "https://api.upstox.com/v2"
-        self.headers = {
-            'Accept': 'application/json',
-            'Authorization': f'Bearer {access_token}'
+# HTML Template
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>📊 Live Option Chain Visualizer</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            line-height: 1.6;
         }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-bottom: 2px solid #00ff88;
+            margin-bottom: 30px;
+            border-radius: 10px;
+        }
+        .header h1 {
+            color: #00ff88;
+            font-size: 2.8rem;
+            margin-bottom: 10px;
+        }
+        .header p {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+        .controls {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            border: 1px solid #334155;
+        }
+        .control-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #cbd5e1;
+            font-weight: 600;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 12px 15px;
+            border-radius: 6px;
+            border: 1px solid #475569;
+            background: #334155;
+            color: #f1f5f9;
+            font-size: 1rem;
+        }
+        button {
+            background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
+            color: #000;
+            border: none;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .metric-card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border-left: 4px solid #00ff88;
+        }
+        .metric-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #00ff88;
+            margin: 10px 0;
+        }
+        .metric-label {
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+        #chart {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        .data-section {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th {
+            background: #334155;
+            padding: 12px;
+            text-align: left;
+            color: #00ff88;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #475569;
+        }
+        tr:hover {
+            background: #2d3748;
+        }
+        .error {
+            background: #7f1d1d;
+            color: #fecaca;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .success {
+            background: #064e3b;
+            color: #a7f3d0;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 LIVE OPTION CHAIN VISUALIZER</h1>
+            <p>Real-time NIFTY & BANKNIFTY Option Chain Analysis</p>
+        </div>
+
+        <div class="controls">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+                <div class="control-group">
+                    <label>🔑 Access Token</label>
+                    <input type="password" id="token" placeholder="Enter Upstox Access Token">
+                </div>
+                
+                <div class="control-group">
+                    <label>📈 Instrument</label>
+                    <select id="instrument">
+                        <option value="NSE_INDEX|Nifty 50">NIFTY 50</option>
+                        <option value="NSE_INDEX|Nifty Bank">BANKNIFTY</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <label>📅 Expiry Date</label>
+                    <input type="date" id="expiry" value="{{ default_expiry }}">
+                </div>
+                
+                <div class="control-group">
+                    <label>🔢 Number of Strikes</label>
+                    <input type="range" id="strikes" min="10" max="50" value="20">
+                    <span id="strikesValue">20</span>
+                </div>
+            </div>
+            
+            <button onclick="fetchData()" style="margin-top: 20px;">
+                🚀 FETCH LIVE DATA
+            </button>
+            
+            <div style="margin-top: 20px; font-size: 0.9rem; color: #94a3b8;">
+                <p>💡 <strong>How to get token:</strong> Go to <a href="https://upstox.com/developer/" style="color: #00ff88;">Upstox Developer Portal</a>, create app and generate access token</p>
+                <p>⏰ <strong>Market Hours:</strong> 9:15 AM - 3:30 PM IST (Monday to Friday)</p>
+            </div>
+        </div>
+
+        <div id="metrics" class="metrics" style="display: none;"></div>
+        
+        <div id="chart"></div>
+        
+        <div class="data-section">
+            <h3 style="margin-bottom: 15px; color: #00ff88;">📋 OPTION CHAIN DATA</h3>
+            <div id="dataTable"></div>
+            <button onclick="downloadCSV()" style="margin-top: 20px; width: auto; padding: 10px 20px;">
+                📥 DOWNLOAD CSV
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Set default expiry to next Thursday
+        function getNextThursday() {
+            const today = new Date();
+            const daysUntilThursday = (11 - today.getDay()) % 7;
+            const nextThursday = new Date(today);
+            nextThursday.setDate(today.getDate() + daysUntilThursday);
+            return nextThursday.toISOString().split('T')[0];
+        }
+        
+        document.getElementById('expiry').value = getNextThursday();
+        
+        // Update strikes value display
+        document.getElementById('strikes').addEventListener('input', function() {
+            document.getElementById('strikesValue').textContent = this.value;
+        });
+        
+        let currentData = null;
+        
+        async function fetchData() {
+            const token = document.getElementById('token').value;
+            const instrument = document.getElementById('instrument').value;
+            const expiry = document.getElementById('expiry').value;
+            const strikes = document.getElementById('strikes').value;
+            
+            if (!token) {
+                showError('Please enter your Upstox Access Token');
+                return;
+            }
+            
+            showLoading();
+            
+            try {
+                const response = await fetch('/api/option-chain', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        token: token,
+                        instrument: instrument,
+                        expiry: expiry,
+                        strikes: parseInt(strikes)
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentData = data;
+                    displayMetrics(data.metrics);
+                    displayChart(data);
+                    displayDataTable(data.df);
+                    showSuccess('Data fetched successfully!');
+                } else {
+                    showError(data.error || 'Failed to fetch data');
+                }
+            } catch (error) {
+                showError('Network error: ' + error.message);
+            }
+        }
+        
+        function displayMetrics(metrics) {
+            document.getElementById('metrics').style.display = 'grid';
+            document.getElementById('metrics').innerHTML = `
+                <div class="metric-card">
+                    <div class="metric-label">Spot Price</div>
+                    <div class="metric-value">₹${metrics.spot.toLocaleString('en-IN', {minimumFractionDigits: 2})}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">ATM Strike</div>
+                    <div class="metric-value">${metrics.atm}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">PCR</div>
+                    <div class="metric-value">${metrics.pcr.toFixed(2)}</div>
+                    <div class="metric-label">${metrics.pcr < 0.7 ? 'Bullish' : metrics.pcr > 1.3 ? 'Bearish' : 'Neutral'}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Last Updated</div>
+                    <div class="metric-value">${new Date().toLocaleTimeString()}</div>
+                </div>
+            `;
+        }
+        
+        function displayChart(data) {
+            const trace1 = {
+                x: data.chart.ce_strikes,
+                y: data.chart.ce_oi,
+                name: 'CALL OI',
+                type: 'bar',
+                marker: {color: '#00ff88'}
+            };
+            
+            const trace2 = {
+                x: data.chart.pe_strikes,
+                y: data.chart.pe_oi,
+                name: 'PUT OI',
+                type: 'bar',
+                marker: {color: '#ff4444'}
+            };
+            
+            const layout = {
+                title: {
+                    text: `<b>${data.chart.instrument} - OPTION CHAIN OI PROFILE</b><br>` +
+                          `<span style="font-size:12px">Expiry: ${data.chart.expiry_display} | ` +
+                          `Spot: ₹${data.metrics.spot.toLocaleString('en-IN', {minimumFractionDigits: 2})} | ` +
+                          `PCR: ${data.metrics.pcr.toFixed(2)}</span>`,
+                    font: {size: 16, color: '#f1f5f9'}
+                },
+                xaxis: {
+                    title: 'Strike Price',
+                    tickangle: 45,
+                    gridcolor: '#475569',
+                    color: '#f1f5f9'
+                },
+                yaxis: {
+                    title: 'Open Interest',
+                    gridcolor: '#475569',
+                    color: '#f1f5f9'
+                },
+                plot_bgcolor: '#1e293b',
+                paper_bgcolor: '#1e293b',
+                font: {color: '#f1f5f9'},
+                barmode: 'group',
+                hovermode: 'x unified',
+                showlegend: true,
+                legend: {
+                    orientation: 'h',
+                    yanchor: 'bottom',
+                    y: 1.02,
+                    xanchor: 'right',
+                    x: 1
+                }
+            };
+            
+            Plotly.newPlot('chart', [trace1, trace2], layout);
+        }
+        
+        function displayDataTable(df) {
+            let tableHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Strike</th>
+                            <th>Type</th>
+                            <th>OI</th>
+                            <th>LTP</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            df.forEach(row => {
+                tableHTML += `
+                    <tr>
+                        <td>${row.strike}</td>
+                        <td style="color: ${row.type === 'CE' ? '#00ff88' : '#ff4444'}">${row.type}</td>
+                        <td>${parseInt(row.oi).toLocaleString('en-IN')}</td>
+                        <td>₹${parseFloat(row.ltp).toLocaleString('en-IN', {minimumFractionDigits: 2})}</td>
+                    </tr>
+                `;
+            });
+            
+            tableHTML += '</tbody></table>';
+            document.getElementById('dataTable').innerHTML = tableHTML;
+        }
+        
+        function downloadCSV() {
+            if (!currentData || !currentData.csv) {
+                showError('No data available to download');
+                return;
+            }
+            
+            const blob = new Blob([currentData.csv], {type: 'text/csv'});
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `option_chain_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+        
+        function showLoading() {
+            document.getElementById('chart').innerHTML = '<div class="loading">⏳ Fetching live data...</div>';
+            document.getElementById('dataTable').innerHTML = '';
+        }
+        
+        function showError(message) {
+            const chartDiv = document.getElementById('chart');
+            chartDiv.innerHTML = `<div class="error">❌ ${message}</div>`;
+        }
+        
+        function showSuccess(message) {
+            const chartDiv = document.getElementById('chart');
+            chartDiv.innerHTML += `<div class="success">✅ ${message}</div>`;
+        }
+        
+        // Auto-set expiry date
+        document.getElementById('expiry').value = getNextThursday();
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def home():
+    # Set default expiry to next Thursday
+    today = datetime.now()
+    days_ahead = 3 - today.weekday()  # Thursday = 3
+    if days_ahead <= 0:
+        days_ahead += 7
+    default_expiry = (today + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
     
-    def test_connection(self):
-        """Test API connection"""
-        try:
-            url = f"{self.base_url}/market-quote/ltp"
-            params = {'instrument_key': 'NSE_INDEX|Nifty 50'}
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            return response.status_code == 200
-        except:
-            return False
-    
-    def get_option_chain(self, instrument_key, expiry_date):
-        """Fetch option chain data"""
-        url = f"{self.base_url}/option/chain"
+    return render_template_string(HTML_TEMPLATE, default_expiry=default_expiry)
+
+@app.route('/api/option-chain', methods=['POST'])
+def get_option_chain():
+    try:
+        data = request.json
+        token = data.get('token')
+        instrument_key = data.get('instrument')
+        expiry_date = data.get('expiry')
+        num_strikes = data.get('strikes', 20)
+        
+        if not all([token, instrument_key, expiry_date]):
+            return jsonify({'success': False, 'error': 'Missing parameters'})
+        
+        # Fetch from Upstox API
+        headers = {'Accept': 'application/json', 'Authorization': f'Bearer {token}'}
+        url = 'https://api.upstox.com/v2/option/chain'
         params = {'instrument_key': instrument_key, 'expiry_date': expiry_date}
         
-        try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-        except:
-            pass
-        return None
-    
-    def process_data(self, option_data, num_strikes=20):
-        """Process API response"""
-        if not option_data or option_data.get('status') != 'success':
-            return pd.DataFrame()
+        response = requests.get(url, params=params, headers=headers, timeout=30)
         
+        if response.status_code != 200:
+            return jsonify({'success': False, 'error': f'API Error: {response.status_code}'})
+        
+        api_data = response.json()
+        
+        if api_data.get('status') != 'success':
+            return jsonify({'success': False, 'error': 'No data available'})
+        
+        # Process data
         rows = []
-        for item in option_data['data']:
+        for item in api_data['data']:
             strike = item['strike_price']
             spot = item['underlying_spot_price']
             
-            # Call data
             if item.get('call_options') and item['call_options'].get('market_data'):
                 call = item['call_options']['market_data']
                 rows.append({
-                    'strike': strike, 'type': 'CE', 'oi': call.get('oi', 0),
-                    'ltp': call.get('ltp', 0), 'volume': call.get('volume', 0),
+                    'strike': strike, 'type': 'CE',
+                    'oi': call.get('oi', 0), 'ltp': call.get('ltp', 0),
                     'underlying': spot
                 })
             
-            # Put data
             if item.get('put_options') and item['put_options'].get('market_data'):
                 put = item['put_options']['market_data']
                 rows.append({
-                    'strike': strike, 'type': 'PE', 'oi': put.get('oi', 0),
-                    'ltp': put.get('ltp', 0), 'volume': put.get('volume', 0),
+                    'strike': strike, 'type': 'PE',
+                    'oi': put.get('oi', 0), 'ltp': put.get('ltp', 0),
                     'underlying': spot
                 })
         
         df = pd.DataFrame(rows)
         
-        # Filter strikes
+        # Filter strikes around ATM
         if not df.empty and num_strikes > 0:
-            df = self.filter_strikes_around_atm(df, num_strikes)
+            spot = df['underlying'].iloc[0]
+            unique_strikes = sorted(df['strike'].unique())
+            atm_strike = min(unique_strikes, key=lambda x: abs(x - spot))
+            
+            atm_index = unique_strikes.index(atm_strike)
+            strikes_each_side = num_strikes // 2
+            
+            start_idx = max(0, atm_index - strikes_each_side)
+            end_idx = min(len(unique_strikes), atm_index + strikes_each_side + 1)
+            
+            if start_idx == 0:
+                end_idx = min(len(unique_strikes), num_strikes)
+            elif end_idx == len(unique_strikes):
+                start_idx = max(0, len(unique_strikes) - num_strikes)
+            
+            filtered_strikes = unique_strikes[start_idx:end_idx]
+            df = df[df['strike'].isin(filtered_strikes)]
         
-        return df
-    
-    def filter_strikes_around_atm(self, df, num_strikes):
-        """Filter strikes around ATM"""
         if df.empty:
-            return df
+            return jsonify({'success': False, 'error': 'No data after filtering'})
         
-        spot = df['underlying'].iloc[0]
-        unique_strikes = sorted(df['strike'].unique())
-        atm_strike = min(unique_strikes, key=lambda x: abs(x - spot))
+        # Prepare chart data
+        ce_df = df[df['type'] == 'CE'].sort_values('strike')
+        pe_df = df[df['type'] == 'PE'].sort_values('strike')
         
-        # Find ATM index
-        atm_index = unique_strikes.index(atm_strike)
-        strikes_each_side = num_strikes // 2
+        spot_price = df['underlying'].iloc[0]
+        atm_strike = min(df['strike'].unique(), key=lambda x: abs(x - spot_price))
         
-        # Get strike range
-        start_idx = max(0, atm_index - strikes_each_side)
-        end_idx = min(len(unique_strikes), atm_index + strikes_each_side + 1)
+        total_ce_oi = ce_df['oi'].sum()
+        total_pe_oi = pe_df['oi'].sum()
+        pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0
         
-        # Adjust if near edges
-        if start_idx == 0:
-            end_idx = min(len(unique_strikes), num_strikes)
-        elif end_idx == len(unique_strikes):
-            start_idx = max(0, len(unique_strikes) - num_strikes)
+        instrument_name = "NIFTY 50" if "Nifty 50" in instrument_key else "BANKNIFTY"
+        expiry_display = datetime.strptime(expiry_date, '%Y-%m-%d').strftime('%d %b %Y')
         
-        filtered_strikes = unique_strikes[start_idx:end_idx]
-        return df[df['strike'].isin(filtered_strikes)]
+        # Create CSV
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_data = csv_buffer.getvalue()
+        
+        return jsonify({
+            'success': True,
+            'metrics': {
+                'spot': spot_price,
+                'atm': atm_strike,
+                'total_ce': total_ce_oi,
+                'total_pe': total_pe_oi,
+                'pcr': pcr
+            },
+            'chart': {
+                'ce_strikes': ce_df['strike'].tolist(),
+                'ce_oi': ce_df['oi'].tolist(),
+                'pe_strikes': pe_df['strike'].tolist(),
+                'pe_oi': pe_df['oi'].tolist(),
+                'instrument': instrument_name,
+                'expiry_display': expiry_display
+            },
+            'df': df.to_dict('records'),
+            'csv': csv_data
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
-def create_oi_chart(df, instrument, expiry_date):
-    """Create OI chart"""
-    if df.empty:
-        return None, {}
-    
-    # Prepare data
-    ce_df = df[df['type'] == 'CE'].sort_values('strike')
-    pe_df = df[df['type'] == 'PE'].sort_values('strike')
-    
-    # Calculate metrics
-    spot_price = df['underlying'].iloc[0]
-    atm_strike = min(df['strike'].unique(), key=lambda x: abs(x - spot_price))
-    
-    total_ce_oi = ce_df['oi'].sum()
-    total_pe_oi = pe_df['oi'].sum()
-    pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0
-    
-    # Format expiry
-    expiry_display = datetime.strptime(expiry_date, '%Y-%m-%d').strftime('%d %b %Y')
-    
-    # Create figure
-    fig = go.Figure()
-    
-    # Add Call OI bars
-    fig.add_trace(go.Bar(
-        x=ce_df['strike'], y=ce_df['oi'], name='CALL OI',
-        marker_color='#00ff88', width=15,
-        hovertemplate='<b>%{x} CE</b><br>OI: %{y:,}<br>LTP: ₹%{customdata:.2f}<extra></extra>',
-        customdata=ce_df['ltp']
-    ))
-    
-    # Add Put OI bars
-    fig.add_trace(go.Bar(
-        x=pe_df['strike'], y=pe_df['oi'], name='PUT OI',
-        marker_color='#ff4444', width=15,
-        hovertemplate='<b>%{x} PE</b><br>OI: %{y:,}<br>LTP: ₹%{customdata:.2f}<extra></extra>',
-        customdata=pe_df['ltp']
-    ))
-    
-    # Add ATM line
-    fig.add_vline(
-        x=atm_strike, line_dash="dash", line_color="yellow", line_width=3,
-        annotation_text=f"ATM: {atm_strike}", annotation_position="top right"
-    )
-    
-    # Update layout
-    fig.update_layout(
-        title={
-            'text': f'<b>{instrument} - OPTION CHAIN OI PROFILE</b><br>'
-                   f'<span style="font-size:14px">Expiry: {expiry_display} | '
-                   f'Spot: ₹{spot_price:,.2f} | PCR: {pcr:.2f}</span>',
-            'x': 0.5, 'xanchor': 'center', 'font': {'size': 20, 'color': 'white'}
-        },
-        xaxis={
-            'title': '<b>STRIKE PRICE</b>', 'tickangle': 45,
-            'gridcolor': 'rgba(100, 100, 100, 0.3)'
-        },
-        yaxis={
-            'title': '<b>OPEN INTEREST</b>',
-            'gridcolor': 'rgba(100, 100, 100, 0.3)'
-        },
-        barmode='group', bargap=0.15, template='plotly_dark',
-        plot_bgcolor='rgba(0, 0, 0, 0)', paper_bgcolor='rgba(10, 10, 30, 0.9)',
-        height=600, hovermode='x unified', showlegend=True
-    )
-    
-    return fig, {
-        'spot': spot_price, 'atm': atm_strike, 'pcr': pcr,
-        'total_ce': total_ce_oi, 'total_pe': total_pe_oi
-    }
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'})
 
-def main():
-    """Main app function"""
-    
-    # Header
-    st.markdown('<h1 class="main-header">📊 LIVE OPTION CHAIN VISUALIZER</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align:center; color:#aaa;">Real-time NIFTY & BANKNIFTY Data</p>', unsafe_allow_html=True)
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown("## ⚙️ SETTINGS")
-        
-        # Access Token
-        token_input = st.text_input(
-            "Upstox Access Token",
-            type="password",
-            help="Get from https://upstox.com/developer/",
-            placeholder="Paste your token here..."
-        )
-        
-        if token_input:
-            access_token = token_input
-        else:
-            # Try from environment
-            access_token = os.getenv("eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0U0JKM0siLCJqdGkiOiI2OTg0MTRhODI5NTgwOTQyZTMwY2NlNTAiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaWF0IjoxNzcwMjYzNzIwLCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NzAzMjg4MDB9.2p0nMZ-88xfMwXp8nfMd8ZcXor_hzhBKma3IMlP_POA", "")
-        
-        # Instrument selection
-        st.markdown("---")
-        instrument = st.selectbox(
-            "Select Instrument",
-            ["NIFTY 50", "BANKNIFTY"],
-            index=0
-        )
-        
-        instrument_key_map = {
-            "NIFTY 50": "NSE_INDEX|Nifty 50",
-            "BANKNIFTY": "NSE_INDEX|Nifty Bank"
-        }
-        selected_key = instrument_key_map[instrument]
-        
-        # Expiry date
-        st.markdown("---")
-        st.markdown("### 📅 EXPIRY DATE")
-        
-        # Generate expiry options
-        today = datetime.now()
-        expiry_options = []
-        for i in range(4):
-            days_ahead = 3 - today.weekday() + (i * 7)
-            if days_ahead <= 0 and i == 0:
-                days_ahead += 7
-            expiry_date = today + timedelta(days=days_ahead)
-            expiry_options.append(expiry_date.strftime('%Y-%m-%d'))
-        
-        expiry_type = st.radio("Expiry Type", ["Auto", "Manual"], horizontal=True)
-        
-        if expiry_type == "Auto":
-            expiry_date = st.selectbox("Select Expiry", expiry_options, index=0)
-        else:
-            manual_date = st.date_input(
-                "Enter Date",
-                value=datetime.strptime(expiry_options[0], '%Y-%m-%d')
-            )
-            expiry_date = manual_date.strftime('%Y-%m-%d')
-        
-        # Number of strikes
-        st.markdown("---")
-        num_strikes = st.slider(
-            "Number of Strikes",
-            min_value=10, max_value=50, value=20,
-            help="Strikes to show around ATM"
-        )
-        
-        # Refresh
-        st.markdown("---")
-        auto_refresh = st.checkbox("Auto Refresh", value=False)
-        if auto_refresh:
-            refresh_time = st.slider("Seconds", 5, 60, 10)
-        
-        # Fetch button
-        st.markdown("---")
-        fetch_clicked = st.button("🚀 FETCH LIVE DATA", use_container_width=True)
-        
-        # Info
-        with st.expander("ℹ️ INFO"):
-            st.markdown("""
-            - **Market Hours**: 9:15 AM - 3:30 PM IST
-            - **Token**: Get from Upstox Developer Portal
-            - **Expiry**: Usually Thursdays
-            """)
-    
-    # Main content
-    if access_token:
-        # Initialize
-        upstox = UpstoxOptionChain(access_token)
-        
-        # Test connection
-        if fetch_clicked or ('auto_refresh' in locals() and auto_refresh):
-            with st.spinner("Checking connection..."):
-                if not upstox.test_connection():
-                    st.error("❌ Invalid Token")
-                    st.stop()
-            
-            # Fetch data
-            with st.spinner(f"Fetching {instrument} data..."):
-                option_data = upstox.get_option_chain(selected_key, expiry_date)
-                
-                if option_data:
-                    df = upstox.process_data(option_data, num_strikes)
-                    
-                    if not df.empty:
-                        # Display metrics
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        spot_price = df['underlying'].iloc[0]
-                        atm_strike = min(df['strike'].unique(), key=lambda x: abs(x - spot_price))
-                        total_ce = df[df['type'] == 'CE']['oi'].sum()
-                        total_pe = df[df['type'] == 'PE']['oi'].sum()
-                        pcr = total_pe / total_ce if total_ce > 0 else 0
-                        
-                        with col1:
-                            st.metric("Spot Price", f"₹{spot_price:,.2f}")
-                        with col2:
-                            st.metric("ATM Strike", f"{atm_strike}")
-                        with col3:
-                            st.metric("PCR", f"{pcr:.2f}")
-                        with col4:
-                            st.metric("Time", datetime.now().strftime("%H:%M:%S"))
-                        
-                        # Create chart
-                        fig, metrics = create_oi_chart(df, instrument, expiry_date)
-                        
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Data table
-                            with st.expander("📋 VIEW DATA"):
-                                # Format dataframe
-                                display_df = df.copy()
-                                display_df['oi'] = display_df['oi'].apply(lambda x: f"{x:,}")
-                                display_df['ltp'] = display_df['ltp'].apply(lambda x: f"₹{x:,.2f}")
-                                
-                                st.dataframe(
-                                    display_df[['strike', 'type', 'oi', 'ltp', 'volume']],
-                                    hide_index=True,
-                                    use_container_width=True
-                                )
-                                
-                                # Download
-                                csv = df.to_csv(index=False)
-                                st.download_button(
-                                    "📥 DOWNLOAD CSV",
-                                    csv,
-                                    f"option_chain_{instrument}_{expiry_date}.csv",
-                                    "text/csv",
-                                    use_container_width=True
-                                )
-                            
-                            # Analytics
-                            with st.expander("📈 ANALYTICS"):
-                                tab1, tab2 = st.tabs(["Max OI", "Levels"])
-                                
-                                with tab1:
-                                    max_ce = df[df['type'] == 'CE'].loc[df['oi'].idxmax()]
-                                    max_pe = df[df['type'] == 'PE'].loc[df['oi'].idxmax()]
-                                    st.write(f"**Max Call OI**: ₹{max_ce['strike']} ({max_ce['oi']:,})")
-                                    st.write(f"**Max Put OI**: ₹{max_pe['strike']} ({max_pe['oi']:,})")
-                                
-                                with tab2:
-                                    support = df[df['type'] == 'PE'].nlargest(3, 'oi')['strike'].min()
-                                    resistance = df[df['type'] == 'CE'].nlargest(3, 'oi')['strike'].max()
-                                    st.write(f"**Support**: ₹{support}")
-                                    st.write(f"**Resistance**: ₹{resistance}")
-                        else:
-                            st.warning("No chart data")
-                    else:
-                        st.warning("No data available")
-                else:
-                    st.error("API Error")
-            
-            # Auto refresh
-            if auto_refresh:
-                time.sleep(refresh_time)
-                st.rerun()
-        else:
-            # Initial state
-            st.info("👈 Configure settings and click 'FETCH LIVE DATA'")
-    else:
-        st.warning("Please enter Access Token in sidebar")
-
-# Run app
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
